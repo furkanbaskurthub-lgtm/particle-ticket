@@ -15,7 +15,9 @@ Demo Video ve görevlinin telefondan qr'ı okuttuktan sonraki ekranı:
 
 https://github.com/user-attachments/assets/742f024f-fce9-49b4-bb65-1a84cc6c510b
 
-![Uploading WhatsApp Image 2026-03-27 at 01.48.51.jpeg…]()
+
+![görevli](https://github.com/user-attachments/assets/dd04ce88-531d-459b-a120-d28c34b967d2)
+
 
 
 
