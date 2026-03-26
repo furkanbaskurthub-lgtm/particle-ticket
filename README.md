@@ -9,8 +9,15 @@ Bu projede klasik “statik QR” yerine:
 - **Scanner-app**: React Native + VisionCamera `useCodeScanner` ile standart QR okuma
 
 Amaç: Kullanıcı “Göster” dediğinde bilet ekranı canlı ve dinamik kalsın; görevli de hızlı, sağlam ve profesyonel şekilde okutabilsin.
+Demo Video ve görevlinin telefondan qr'ı okuttuktan sonraki ekranı:
 
 ---
+
+https://github.com/user-attachments/assets/742f024f-fce9-49b4-bb65-1a84cc6c510b
+
+![Uploading WhatsApp Image 2026-03-27 at 01.48.51.jpeg…]()
+
+
 
 ## Neden düz QR kullanmıyoruz?
 
