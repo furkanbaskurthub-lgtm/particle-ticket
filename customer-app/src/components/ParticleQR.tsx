@@ -2,105 +2,157 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { getRollingToken } from '../api/client';
 
+interface DotParticle {
+  baseX: number;
+  baseY: number;
+  orbitR: number;      // orbit radius px
+  orbitSpd: number;   // orbit speed rad/s
+  phase1: number;     // primary orbit phase
+  phase2: number;     // secondary Lissajous phase
+  spd2: number;       // secondary speed multiplier
+  bPhase: number;     // breathe phase
+  bSpd: number;       // breathe speed
+  isFinder: boolean;
+  sphereFade: number; // 1=center bright, 0=edge dim
+}
+
+interface AmbientParticle {
+  angle: number;      // current angle around center
+  radius: number;     // orbital radius from center
+  angSpd: number;     // angular speed rad/s
+  r: number;          // dot size
+  opacity: number;
+  hue: number;
+  phase: number;
+}
+
+interface EnergyRing {
+  progress: number;  // 0→1 expanding ring
+  speed: number;
+  opacity: number;
+}
+
 interface Props {
   ticketId: string;
   size?: number;
   isUsed?: boolean;
 }
 
-interface AmbientParticle {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  radius: number;
-  opacity: number;
-  hue: number;
-  phase: number;
-}
+function rnd() { return Math.random(); }
+function rndBetween(a: number, b: number) { return a + rnd() * (b - a); }
 
 function getQRMatrix(text: string): { modules: boolean[][]; size: number } | null {
   try {
     const qr = QRCode.create(text, { errorCorrectionLevel: 'M' });
-    const size = qr.modules.size;
+    const sz = qr.modules.size;
     const data = qr.modules.data;
     const modules: boolean[][] = [];
-    for (let y = 0; y < size; y++) {
+    for (let y = 0; y < sz; y++) {
       const row: boolean[] = [];
-      for (let x = 0; x < size; x++) {
-        row.push(data[y * size + x] === 1);
-      }
+      for (let x = 0; x < sz; x++) row.push(data[y * sz + x] === 1);
       modules.push(row);
     }
-    return { modules, size };
-  } catch {
-    return null;
-  }
+    return { modules, size: sz };
+  } catch { return null; }
 }
 
 function isFinderPattern(x: number, y: number, size: number): boolean {
-  // Finder patterns are 7x7 in top-left, top-right, bottom-left corners
-  const inTopLeft = x < 7 && y < 7;
-  const inTopRight = x >= size - 7 && y < 7;
-  const inBottomLeft = x < 7 && y >= size - 7;
-  return inTopLeft || inTopRight || inBottomLeft;
+  return (x < 7 && y < 7) || (x >= size - 7 && y < 7) || (x < 7 && y >= size - 7);
+}
+
+function buildDots(
+  matrix: { modules: boolean[][]; size: number },
+  padding: number,
+  cellSize: number,
+  cx: number,
+  cy: number,
+  halfGrid: number,
+): DotParticle[] {
+  const dots: DotParticle[] = [];
+  for (let row = 0; row < matrix.size; row++) {
+    for (let col = 0; col < matrix.size; col++) {
+      if (!matrix.modules[row][col]) continue;
+      const bx = padding + col * cellSize + cellSize / 2;
+      const by = padding + row * cellSize + cellSize / 2;
+      const dx = bx - cx;
+      const dy = by - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const sphereFade = 1 - Math.min(1, dist / halfGrid) * 0.35;
+      dots.push({
+        baseX: bx, baseY: by,
+        orbitR: rndBetween(1.2, 3.8),
+        orbitSpd: rndBetween(0.4, 1.1) * (rnd() > 0.5 ? 1 : -1),
+        phase1: rnd() * Math.PI * 2,
+        phase2: rnd() * Math.PI * 2,
+        spd2: rndBetween(0.6, 1.4),
+        bPhase: rnd() * Math.PI * 2,
+        bSpd: rndBetween(0.7, 1.6),
+        isFinder: isFinderPattern(col, row, matrix.size),
+        sphereFade,
+      });
+    }
+  }
+  return dots;
 }
 
 export default function ParticleQR({ ticketId, size = 280, isUsed }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const animRef = useRef<number>(0);
-  const tokenRef = useRef<string>('');
-  const matrixRef = useRef<{ modules: boolean[][]; size: number } | null>(null);
-  const prevMatrixRef = useRef<{ modules: boolean[][]; size: number } | null>(null);
-  const transitionRef = useRef(1); // 0→1 transition progress
-  const ambientRef = useRef<AmbientParticle[]>([]);
-  const startTimeRef = useRef(Date.now());
+  const canvasRef    = useRef<HTMLCanvasElement>(null);
+  const animRef      = useRef<number>(0);
+  const matrixRef    = useRef<{ modules: boolean[][]; size: number } | null>(null);
+  const dotsRef      = useRef<DotParticle[]>([]);
+  const transRef     = useRef(1);
+  const ambientRef   = useRef<AmbientParticle[]>([]);
+  const ringsRef     = useRef<EnergyRing[]>([]);
+  const startRef     = useRef(Date.now());
+  const nextRingRef  = useRef(0);
   const [error, setError] = useState(false);
 
-  // Initialize ambient particles
+  // Build ambient particles once
   useEffect(() => {
-    const particles: AmbientParticle[] = [];
-    for (let i = 0; i < 35; i++) {
-      particles.push({
-        x: Math.random() * size,
-        y: Math.random() * size,
-        vx: (Math.random() - 0.5) * 0.3,
-        vy: (Math.random() - 0.5) * 0.3,
-        radius: Math.random() * 2 + 0.5,
-        opacity: Math.random() * 0.4 + 0.1,
-        hue: 200 + Math.random() * 60, // blue-cyan range
-        phase: Math.random() * Math.PI * 2,
+    const cx = size / 2, cy = size / 2;
+    const p: AmbientParticle[] = [];
+    for (let i = 0; i < 65; i++) {
+      const radiusOrb = rndBetween(size * 0.05, size * 0.52);
+      p.push({
+        angle:  rnd() * Math.PI * 2,
+        radius: radiusOrb,
+        angSpd: rndBetween(0.05, 0.25) * (rnd() > 0.5 ? 1 : -1),
+        r:      rndBetween(0.4, 2.2),
+        opacity: rndBetween(0.08, 0.45),
+        hue:    rndBetween(195, 250),
+        phase:  rnd() * Math.PI * 2,
       });
     }
-    ambientRef.current = particles;
+    ambientRef.current = p;
   }, [size]);
 
-  // Fetch rolling token periodically
+  // Fetch rolling token
   const fetchToken = useCallback(async () => {
     if (isUsed) return;
     try {
       const { data } = await getRollingToken(ticketId);
       const newMatrix = getQRMatrix(data.token);
-      if (newMatrix) {
-        prevMatrixRef.current = matrixRef.current;
-        matrixRef.current = newMatrix;
-        transitionRef.current = 0; // start transition
-        tokenRef.current = data.token;
-        setError(false);
-      }
-    } catch {
-      setError(true);
-    }
-  }, [ticketId, isUsed]);
+      if (!newMatrix) return;
+      matrixRef.current = newMatrix;
+      transRef.current  = 0;
+      const padding  = size * 0.1;
+      const available = size - padding * 2;
+      const cellSize  = available / newMatrix.size;
+      const cx = size / 2, cy = size / 2;
+      const halfGrid = (available / 2) * 1.1;
+      dotsRef.current = buildDots(newMatrix, padding, cellSize, cx, cy, halfGrid);
+      setError(false);
+    } catch { setError(true); }
+  }, [ticketId, isUsed, size]);
 
   useEffect(() => {
     if (isUsed) return;
     fetchToken();
-    const interval = setInterval(fetchToken, 8000);
-    return () => clearInterval(interval);
+    const iv = setInterval(fetchToken, 8000);
+    return () => clearInterval(iv);
   }, [fetchToken, isUsed]);
 
-  // Animation loop
+  // Draw loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -108,163 +160,155 @@ export default function ParticleQR({ ticketId, size = 280, isUsed }: Props) {
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
+    canvas.width  = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
+    startRef.current = Date.now();
 
-    startTimeRef.current = Date.now();
+    const cx = size / 2, cy = size / 2;
 
     const draw = () => {
-      const now = Date.now();
-      const elapsed = (now - startTimeRef.current) / 1000;
+      const elapsed = (Date.now() - startRef.current) / 1000;
 
       ctx.clearRect(0, 0, size, size);
 
-      // Dark background with subtle radial gradient
-      const bgGrad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size * 0.7);
-      bgGrad.addColorStop(0, 'rgba(15, 15, 25, 0.95)');
-      bgGrad.addColorStop(1, 'rgba(5, 5, 12, 0.98)');
-      ctx.fillStyle = bgGrad;
+      // ── 1. Deep space background ────────────────────────────────────────
+      ctx.fillStyle = '#03050f';
       ctx.fillRect(0, 0, size, size);
 
-      // Update transition
-      if (transitionRef.current < 1) {
-        transitionRef.current = Math.min(1, transitionRef.current + 0.03);
-      }
-      const t = transitionRef.current;
+      // ── 2. Central nebula glow (multi-layer) ────────────────────────────
+      const nebulaSize = size * (0.45 + 0.05 * Math.sin(elapsed * 0.4));
+      const neb1 = ctx.createRadialGradient(cx, cy, 0, cx, cy, nebulaSize);
+      neb1.addColorStop(0,   'rgba(30, 80, 200, 0.18)');
+      neb1.addColorStop(0.4, 'rgba(20, 60, 160, 0.10)');
+      neb1.addColorStop(0.7, 'rgba(10, 30, 100, 0.05)');
+      neb1.addColorStop(1,   'rgba(0,  0,  60,  0)');
+      ctx.fillStyle = neb1;
+      ctx.fillRect(0, 0, size, size);
 
-      // Draw QR modules as animated dots
-      const matrix = matrixRef.current;
-      if (matrix && !isUsed) {
-        const padding = size * 0.1;
+      // Outer soft glow halo
+      const halo = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.65);
+      halo.addColorStop(0,   'rgba(40, 120, 255, 0.07)');
+      halo.addColorStop(0.5, 'rgba(80, 160, 255, 0.04)');
+      halo.addColorStop(1,   'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = halo;
+      ctx.fillRect(0, 0, size, size);
+
+      // ── 3. Energy rings ─────────────────────────────────────────────────
+      if (elapsed > nextRingRef.current && !isUsed) {
+        ringsRef.current.push({ progress: 0, speed: rndBetween(0.25, 0.45), opacity: rndBetween(0.15, 0.3) });
+        nextRingRef.current = elapsed + rndBetween(2.5, 5.0);
+      }
+      ringsRef.current = ringsRef.current.filter(ring => ring.progress < 1);
+      for (const ring of ringsRef.current) {
+        ring.progress = Math.min(1, ring.progress + ring.speed * 0.016);
+        const ringR   = ring.progress * size * 0.52;
+        const ringA   = ring.opacity * (1 - ring.progress);
+        ctx.strokeStyle = `rgba(60, 150, 255, ${ringA})`;
+        ctx.lineWidth   = 1.5 * (1 - ring.progress);
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // ── 4. Transition progress ──────────────────────────────────────────
+      if (transRef.current < 1) transRef.current = Math.min(1, transRef.current + 0.025);
+      const t = transRef.current;
+
+      // ── 5. QR dots (orbital motion) ─────────────────────────────────────
+      const dots = dotsRef.current;
+      if (dots.length > 0 && !isUsed) {
+        const sweepPos = ((elapsed * 0.35) % 1.8) - 0.4;
+
+        const padding   = size * 0.1;
         const available = size - padding * 2;
-        const cellSize = available / matrix.size;
-        const dotRadius = cellSize * 0.38;
+        const cellSize  = available / (matrixRef.current?.size ?? 25);
+        const dotBase   = cellSize * 0.36;
 
-        // Sweeping light effect — a diagonal glow line
-        const sweepAngle = Math.PI / 4;
-        const sweepSpeed = 0.4;
-        const sweepPos = ((elapsed * sweepSpeed) % 1.6) - 0.3; // -0.3 to 1.3
+        for (const dot of dots) {
+          // Orbital position — Lissajous-like path
+          const angle1 = elapsed * dot.orbitSpd + dot.phase1;
+          const angle2 = elapsed * dot.orbitSpd * dot.spd2 + dot.phase2;
+          const ox = Math.cos(angle1) * dot.orbitR + Math.sin(angle2) * (dot.orbitR * 0.5);
+          const oy = Math.sin(angle1) * dot.orbitR + Math.cos(angle2) * (dot.orbitR * 0.5);
 
-        for (let row = 0; row < matrix.size; row++) {
-          for (let col = 0; col < matrix.size; col++) {
-            if (!matrix.modules[row][col]) continue;
+          const drawX = dot.baseX + ox;
+          const drawY = dot.baseY + oy;
 
-            const cx = padding + col * cellSize + cellSize / 2;
-            const cy = padding + row * cellSize + cellSize / 2;
+          // Breathe scale
+          const breathe = 0.82 + 0.18 * Math.sin(elapsed * dot.bSpd + dot.bPhase);
+          const finderBoost = dot.isFinder ? 1.2 : 1.0;
 
-            // Normalized position along sweep direction
-            const normX = (cx - padding) / available;
-            const normY = (cy - padding) / available;
-            const sweepDist = Math.abs(
-              (normX * Math.cos(sweepAngle) + normY * Math.sin(sweepAngle)) - sweepPos
-            );
-            const sweepGlow = Math.max(0, 1 - sweepDist * 5); // glow intensity near sweep line
+          // Transition fade-in
+          const dotT = Math.min(1, t + (1 - t) * rnd() * 0.5);
 
-            // Per-dot animation
-            const phase = (row * 7 + col * 13) * 0.1;
-            const breathe = 0.85 + 0.15 * Math.sin(elapsed * 1.5 + phase);
-            const jitterX = Math.sin(elapsed * 0.7 + phase * 2) * 0.6;
-            const jitterY = Math.cos(elapsed * 0.9 + phase * 3) * 0.6;
+          // Sweep glow
+          const normAlong = ((drawX - padding) / available) * Math.cos(Math.PI / 5)
+                          + ((drawY - padding) / available) * Math.sin(Math.PI / 5);
+          const sweepGlow = Math.max(0, 1 - Math.abs(normAlong - sweepPos) * 6);
 
-            const isFinder = isFinderPattern(col, row, matrix.size);
-            const finderScale = isFinder ? 1.15 : 1;
+          const r = dotBase * breathe * finderBoost * dotT;
+          if (r < 0.3) continue;
 
-            // Transition: new dots fade/scale in
-            const dotT = Math.min(1, t * 2 + (1 - t) * ((row + col) / (matrix.size * 2)));
-            const scale = dotT * breathe * finderScale;
-            const r = dotRadius * scale;
+          const alpha = dot.sphereFade * dotT * (dot.isFinder ? 0.97 : 0.88) + sweepGlow * 0.15;
 
-            if (r < 0.3) continue;
+          // Outer glow halo
+          const glowR = r * (3.5 + sweepGlow * 2.0);
+          const glow  = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, glowR);
+          glow.addColorStop(0,   `rgba(100, 175, 255, ${alpha * 0.25})`);
+          glow.addColorStop(0.4, `rgba(60,  140, 255, ${alpha * 0.10})`);
+          glow.addColorStop(1,   'rgba(30, 80, 200, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(drawX, drawY, glowR, 0, Math.PI * 2);
+          ctx.fill();
 
-            const drawX = cx + jitterX;
-            const drawY = cy + jitterY;
-
-            // Base color: white-blue, finder patterns slightly brighter
-            const baseAlpha = (isFinder ? 0.95 : 0.85) * dotT;
-            const glowAlpha = baseAlpha + sweepGlow * 0.3;
-
-            // Outer glow
-            const glowRadius = r * (2.5 + sweepGlow * 1.5);
-            const glow = ctx.createRadialGradient(drawX, drawY, r * 0.3, drawX, drawY, glowRadius);
-            glow.addColorStop(0, `rgba(120, 180, 255, ${glowAlpha * 0.3})`);
-            glow.addColorStop(0.5, `rgba(80, 140, 247, ${glowAlpha * 0.1})`);
-            glow.addColorStop(1, 'rgba(80, 140, 247, 0)');
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(drawX, drawY, glowRadius, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Core dot
-            const coreGrad = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, r);
-            const coreWhite = Math.min(255, 200 + sweepGlow * 55);
-            coreGrad.addColorStop(0, `rgba(${coreWhite}, ${coreWhite}, 255, ${glowAlpha})`);
-            coreGrad.addColorStop(0.7, `rgba(140, 190, 255, ${glowAlpha * 0.8})`);
-            coreGrad.addColorStop(1, `rgba(80, 142, 247, ${glowAlpha * 0.4})`);
-            ctx.fillStyle = coreGrad;
-            ctx.beginPath();
-            ctx.arc(drawX, drawY, r, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-
-        // Sweep line glow overlay
-        if (sweepPos > -0.2 && sweepPos < 1.2) {
-          ctx.save();
-          ctx.translate(size / 2, size / 2);
-          ctx.rotate(sweepAngle);
-          const lineX = (sweepPos - 0.5) * available * 1.4;
-          const lineGrad = ctx.createLinearGradient(lineX - 15, 0, lineX + 15, 0);
-          lineGrad.addColorStop(0, 'rgba(100, 180, 255, 0)');
-          lineGrad.addColorStop(0.5, 'rgba(100, 180, 255, 0.06)');
-          lineGrad.addColorStop(1, 'rgba(100, 180, 255, 0)');
-          ctx.fillStyle = lineGrad;
-          ctx.fillRect(lineX - 15, -size, 30, size * 2);
-          ctx.restore();
+          // Core dot — white-hot center → blue edge
+          const coreW = Math.min(255, 215 + sweepGlow * 40);
+          const core  = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, r);
+          core.addColorStop(0,   `rgba(${coreW}, ${coreW}, 255, ${alpha})`);
+          core.addColorStop(0.55,`rgba(130, 190, 255, ${alpha * 0.85})`);
+          core.addColorStop(1,   `rgba(60, 130, 240, ${alpha * 0.4})`);
+          ctx.fillStyle = core;
+          ctx.beginPath();
+          ctx.arc(drawX, drawY, r, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
 
-      // "Used" overlay
+      // ── 6. Ambient orbital particles ────────────────────────────────────
+      for (const p of ambientRef.current) {
+        p.angle += p.angSpd * 0.016;
+        const px = cx + Math.cos(p.angle) * p.radius;
+        const py = cy + Math.sin(p.angle) * p.radius;
+        const flicker = p.opacity * (0.55 + 0.45 * Math.sin(elapsed * 1.8 + p.phase));
+        ctx.fillStyle = `hsla(${p.hue}, 75%, 72%, ${flicker})`;
+        ctx.beginPath();
+        ctx.arc(px, py, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // ── 7. "Used" overlay ───────────────────────────────────────────────
       if (isUsed) {
-        ctx.fillStyle = 'rgba(5, 5, 12, 0.7)';
+        ctx.fillStyle = 'rgba(3, 5, 15, 0.78)';
         ctx.fillRect(0, 0, size, size);
         ctx.fillStyle = '#ef4444';
         ctx.font = `bold ${size * 0.13}px Inter, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('✗', size / 2, size / 2 - size * 0.06);
+        ctx.fillText('✗', cx, cy - size * 0.06);
         ctx.font = `600 ${size * 0.055}px Inter, sans-serif`;
-        ctx.fillText('Kullanıldı', size / 2, size / 2 + size * 0.08);
-      }
-
-      // Ambient floating particles
-      const particles = ambientRef.current;
-      for (const p of particles) {
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 0) p.x = size;
-        if (p.x > size) p.x = 0;
-        if (p.y < 0) p.y = size;
-        if (p.y > size) p.y = 0;
-
-        const flickerOpacity = p.opacity * (0.6 + 0.4 * Math.sin(elapsed * 2 + p.phase));
-        ctx.fillStyle = `hsla(${p.hue}, 70%, 70%, ${flickerOpacity})`;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.fillText('Kullanıldı', cx, cy + size * 0.08);
       }
 
       animRef.current = requestAnimationFrame(draw);
     };
 
     draw();
-
-    return () => {
-      cancelAnimationFrame(animRef.current);
-    };
+    return () => cancelAnimationFrame(animRef.current);
   }, [size, isUsed]);
 
-  if (error && !matrixRef.current) {
+  if (error && dotsRef.current.length === 0) {
     return (
       <div style={{ width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <span style={{ color: '#f59e0b', fontSize: 12 }}>Token alınamadı</span>
@@ -275,11 +319,7 @@ export default function ParticleQR({ ticketId, size = 280, isUsed }: Props) {
   return (
     <canvas
       ref={canvasRef}
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 16,
-      }}
+      style={{ width: size, height: size, borderRadius: 20 }}
     />
   );
 }
