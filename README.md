@@ -19,6 +19,11 @@ https://github.com/user-attachments/assets/742f024f-fce9-49b4-bb65-1a84cc6c510b
 ![görevli](https://github.com/user-attachments/assets/dd04ce88-531d-459b-a120-d28c34b967d2)
 
 
+EĞERKİ EKRAN GÖRÜNTÜSÜ ALINMIŞ BİR  QR OKUTMA İŞLEMİ YAPILIRSA ŞU ŞEKİLDE UYARI İLE OKUMA YAPILAMAYACAĞI BELİRİR:
+
+![ASD](https://github.com/user-attachments/assets/fedf54a0-0290-41bd-b020-08c7c385518b)
+
+
 
 
 ## Neden düz QR kullanmıyoruz?
