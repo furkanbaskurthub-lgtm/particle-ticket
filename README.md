@@ -1,6 +1,6 @@
 # Particle Ticket
 
-Apple Wallet benzeri bir yaklaşımla tasarlanmış, **ekran görüntüsü (screenshot) ve replay** saldırılarına dayanıklı biletleme sistemi.
+Apple Wallet benzeri bir yaklaşımla tasarlanmış, **ekran görüntüsü (screenshot) ve replay** saldırılarına dayanıklı biletleme sistemi ve scanner-app yazılımına sahip olmayan kişiler statik qr okuma işlemi yapamazlar çünkü normal qr okuyucu uygulamalar ya da halihazıra telefonun kamerası ile qr okuyucular bu statik qr'ı algılayamazlar.
 
 Bu projede klasik “statik QR” yerine:
 
