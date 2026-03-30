@@ -80,7 +80,7 @@ function buildDots(
       const sphereFade = 1 - Math.min(1, dist / halfGrid) * 0.35;
       dots.push({
         baseX: bx, baseY: by,
-        orbitR: rndBetween(1.2, 3.8),
+        orbitR: rndBetween(0.2, 0.7),
         orbitSpd: rndBetween(0.4, 1.1) * (rnd() > 0.5 ? 1 : -1),
         phase1: rnd() * Math.PI * 2,
         phase2: rnd() * Math.PI * 2,
